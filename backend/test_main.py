@@ -6,10 +6,12 @@ from firebase_admin import credentials
 from firebase_admin import db
 import json
 
-# Initialize test client
-client = TestClient(app)
+@pytest.fixture(scope="module")
+def test_client():
+    with TestClient(app) as client:
+        yield client
 
-def test_message_with_id():
+def test_message_with_id(test_client):
     # Test data
     test_message = {
         "content": "Test message",
@@ -17,7 +19,7 @@ def test_message_with_id():
     }
     
     # Send POST request
-    response = client.post("/api/message", json=test_message)
+    response = test_client.post("/api/message", json=test_message)
     
     # Check response
     assert response.status_code == 200
@@ -31,14 +33,14 @@ def test_message_with_id():
     assert data["content"] == test_message["content"]
     assert "timestamp" in data
 
-def test_message_without_id():
+def test_message_without_id(test_client):
     # Test data without ID
     test_message = {
         "content": "Test message"
     }
     
     # Send POST request
-    response = client.post("/api/message", json=test_message)
+    response = test_client.post("/api/message", json=test_message)
     
     # Check response (should fail)
     assert response.status_code == 422  # Validation error 
