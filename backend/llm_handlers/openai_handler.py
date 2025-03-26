@@ -7,6 +7,9 @@ import asyncio
 from tenacity import retry, stop_after_attempt, wait_exponential
 import openai
 
+# Configure logger
+logger = logging.getLogger(__name__)
+
 class OpenAIChatHandler(BaseLLMHandler):
     def __init__(self, api_key: str):
         super().__init__(api_key)
@@ -82,18 +85,29 @@ class OpenAIChatHandler(BaseLLMHandler):
             self.logger.error(f"Error details: {e.__dict__ if hasattr(e, '__dict__') else 'No details available'}")
             return False
 
-    async def get_response(self, content: str) -> str:
+    async def get_response(self, user_input: str) -> str:
+        """Get response from OpenAI API"""
         try:
+            prompt = f"""Before answering this question: "{user_input}", think about the three most important questions that you need to understand to understand the deepness of the initial question.
+
+Then, provide a 300-word answer in the most concise way.
+
+Your response should be structured as follows:
+1. First, list the three key questions you identified
+2. Then, provide your concise 300-word answer
+
+Remember to be precise and focused in your response."""
+
             response = await self.client.chat.completions.create(
                 model=self.model,
                 messages=[
-                    {"role": "user", "content": content}
+                    {"role": "system", "content": "You are a helpful AI assistant that provides thoughtful, concise responses."},
+                    {"role": "user", "content": prompt}
                 ],
                 temperature=0.7,
                 max_tokens=1000
             )
             return response.choices[0].message.content
         except Exception as e:
-            error_message = str(e)
-            self.logger.error(f"Error in {self.__class__.__name__}: {error_message}")
-            return f"Error: {error_message}" 
+            logger.error(f"Error in OpenAIChatHandler: {str(e)}")
+            raise 

@@ -6,12 +6,6 @@ import { useAuth } from './contexts/AuthContext';
 import Login from './components/Login';
 import Profile from './components/Profile';
 
-interface Message {
-  content: string;
-  timestamp: number;
-  id: string;
-}
-
 interface LLMResponse {
   answer: string;
   timestamp: number;
@@ -28,6 +22,41 @@ interface AnalysisResponse {
   estimatedTime: number;
 }
 
+interface Message {
+  content: string;
+  timestamp: number;
+  id: string;
+  responses?: {
+    [modelKey: string]: LLMResponse;
+  };
+  analysis?: {
+    summary: string;
+    bestModel: string;
+    timestamp: number;
+  };
+}
+
+interface MessageResponses {
+  responses: {
+    [modelKey: string]: LLMResponse;
+  };
+  analysis?: {
+    summary: string;
+    bestModel: string;
+    timestamp: number;
+  };
+}
+
+interface AllResponses {
+  [key: string]: MessageResponses;
+}
+
+interface LLMStatus {
+  enabled: boolean;
+  name: string;
+  key: string;
+}
+
 function ChatInterface() {
   const { user, logout } = useAuth();
   const [messages, setMessages] = useState<Message[]>([]);
@@ -35,11 +64,23 @@ function ChatInterface() {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [currentMessageId, setCurrentMessageId] = useState<string | null>(null);
   const [modelResponses, setModelResponses] = useState<ModelResponses>({});
-  const [allResponses, setAllResponses] = useState<{ [key: string]: ModelResponses }>({});
+  const [allResponses, setAllResponses] = useState<AllResponses>({});
   const [showProfile, setShowProfile] = useState(false);
   const [analyzing, setAnalyzing] = useState<{ [key: string]: boolean }>({});
   const [analysisResults, setAnalysisResults] = useState<{ [key: string]: AnalysisResponse }>({});
   const [estimatedTimes, setEstimatedTimes] = useState<{ [key: string]: number }>({});
+  const [llmStatus, setLlmStatus] = useState<LLMStatus[]>([
+    { enabled: true, name: 'Deepseek', key: 'deepseek' },
+    { enabled: true, name: 'Grok', key: 'grok' },
+    { enabled: true, name: 'Gemini', key: 'gemini' },
+    { enabled: true, name: 'GPT', key: 'openai' }
+  ]);
+
+  const toggleLLM = (key: string) => {
+    setLlmStatus(prev => prev.map(llm => 
+      llm.key === key ? { ...llm, enabled: !llm.enabled } : llm
+    ));
+  };
 
   useEffect(() => {
     if (!user) return;
@@ -74,16 +115,16 @@ function ChatInterface() {
                   ...prev,
                   [message.id]: {
                     ...prev[message.id],
-                    [model]: responseData
+                    responses: {
+                      ...prev[message.id]?.responses,
+                      [model]: responseData
+                    }
                   }
                 }));
               }
             });
           });
         });
-      } else {
-        // Initialize empty messages array if no data exists
-        setMessages([]);
       }
     });
   }, [user]);
@@ -110,7 +151,10 @@ function ChatInterface() {
               ...prev,
               [currentMessageId]: {
                 ...prev[currentMessageId],
-                [model]: data
+                responses: {
+                  ...prev[currentMessageId]?.responses,
+                  [model]: data
+                }
               }
             }));
           }
@@ -142,7 +186,8 @@ function ChatInterface() {
         body: JSON.stringify({
           content: newMessage,
           id: messageId,
-          userId: user.uid
+          userId: user.uid,
+          enabledLLMs: llmStatus.filter(llm => llm.enabled).map(llm => llm.key)
         }),
       });
 
@@ -161,22 +206,21 @@ function ChatInterface() {
     return 'q' + Math.random().toString(36).substring(2, 15);
   };
 
-  const handleAnalysis = async (messageId: string, responses: ModelResponses) => {
-    if (!user) return;
-    
-    setAnalyzing(prev => ({ ...prev, [messageId]: true }));
-    
+  const handleAnalysis = async (messageId: string) => {
     try {
+      setAnalyzing(prev => ({ ...prev, [messageId]: true }));
+      setEstimatedTimes(prev => ({ ...prev, [messageId]: 0 }));
+
       const response = await fetch('http://localhost:8000/api/analyze', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
+          'Authorization': `Bearer ${await user?.getIdToken()}`
         },
         body: JSON.stringify({
           messageId,
-          responses,
-          userId: user.uid
-        }),
+          userId: user?.uid
+        })
       });
 
       if (!response.ok) {
@@ -184,22 +228,54 @@ function ChatInterface() {
       }
 
       const data = await response.json();
-      setAnalysisResults(prev => ({ ...prev, [messageId]: data }));
       
-      // Update estimated time every second
-      const startTime = Date.now();
-      const interval = setInterval(() => {
-        const elapsed = Math.floor((Date.now() - startTime) / 1000);
-        setEstimatedTimes(prev => ({ ...prev, [messageId]: elapsed }));
-      }, 1000);
+      // Update analysis results
+      setAnalysisResults(prev => ({
+        ...prev,
+        [messageId]: {
+          summary: data.summary,
+          bestModel: data.bestModel,
+          estimatedTime: data.estimatedTime
+        }
+      }));
 
-      // Clear interval and loading state when analysis is complete
+      // Update all responses with the new analysis data
+      setAllResponses(prev => {
+        const currentResponses = prev[messageId] || { responses: {} };
+        const updatedResponses: MessageResponses = {
+          ...currentResponses,
+          analysis: {
+            summary: data.summary,
+            bestModel: data.bestModel,
+            timestamp: Date.now()
+          }
+        };
+        return {
+          ...prev,
+          [messageId]: updatedResponses
+        };
+      });
+
+      // Update messages with the new analysis data
+      setMessages(prev => prev.map(msg => 
+        msg.id === messageId 
+          ? {
+              ...msg,
+              analysis: {
+                summary: data.summary,
+                bestModel: data.bestModel,
+                timestamp: Date.now()
+              }
+            }
+          : msg
+      ));
+
       setAnalyzing(prev => ({ ...prev, [messageId]: false }));
-      clearInterval(interval);
-
+      setEstimatedTimes(prev => ({ ...prev, [messageId]: 0 }));
     } catch (error) {
-      console.error('Error:', error);
+      console.error('Error analyzing responses:', error);
       setAnalyzing(prev => ({ ...prev, [messageId]: false }));
+      setEstimatedTimes(prev => ({ ...prev, [messageId]: 0 }));
     }
   };
 
@@ -215,6 +291,21 @@ function ChatInterface() {
     <div className="App">
       <header className="App-header">
         <h1>LLM Chat</h1>
+        <div className="llm-controls">
+          {llmStatus.map(llm => (
+            <div key={llm.key} className="llm-toggle">
+              <label className="switch">
+                <input
+                  type="checkbox"
+                  checked={llm.enabled}
+                  onChange={() => toggleLLM(llm.key)}
+                />
+                <span className="slider round"></span>
+              </label>
+              <span className="llm-name">{llm.name}</span>
+            </div>
+          ))}
+        </div>
         <div className="user-info">
           <button onClick={() => setShowProfile(true)} className="profile-button">
             Profile
@@ -232,38 +323,41 @@ function ChatInterface() {
                 <span className="content">{message.content}</span>
               </div>
               <div className="model-responses">
-                {['deepseek', 'grok', 'gemini', 'openai'].map((model) => (
-                  <div 
-                    key={model} 
-                    className={`model-response ${
-                      analysisResults[message.id]?.bestModel === model ? 'best-response' : ''
-                    }`}
-                  >
-                    <h4>{model.charAt(0).toUpperCase() + model.slice(1)}</h4>
-                    {message.id === currentMessageId ? (
-                      modelResponses[model] ? (
-                        <div className="response-content">
-                          {modelResponses[model].answer || `Error: ${modelResponses[model].error || 'Unknown error'}`}
-                        </div>
+                {llmStatus
+                  .filter(llm => llm.enabled)
+                  .map((llm) => (
+                    <div 
+                      key={llm.key} 
+                      className={`model-response ${
+                        analysisResults[message.id]?.bestModel === llm.key ? 'best-response' : ''
+                      }`}
+                    >
+                      <h4>{llm.name}</h4>
+                      {message.id === currentMessageId ? (
+                        modelResponses[llm.key] ? (
+                          <div className="response-content">
+                            {modelResponses[llm.key].answer || `Error: ${modelResponses[llm.key].error || 'Unknown error'}`}
+                          </div>
+                        ) : (
+                          <div className="loading">Waiting for response...</div>
+                        )
                       ) : (
-                        <div className="loading">Waiting for response...</div>
-                      )
-                    ) : (
-                      allResponses[message.id]?.[model] ? (
-                        <div className="response-content">
-                          {allResponses[message.id][model].answer || `Error: ${allResponses[message.id][model].error || 'Unknown error'}`}
-                        </div>
-                      ) : (
-                        <div className="loading">No response yet</div>
-                      )
-                    )}
-                  </div>
-                ))}
+                        allResponses[message.id]?.responses[llm.key] ? (
+                          <div className="response-content">
+                            {allResponses[message.id].responses[llm.key].answer || `Error: ${allResponses[message.id].responses[llm.key].error || 'Unknown error'}`}
+                          </div>
+                        ) : (
+                          <div className="loading">No response yet</div>
+                        )
+                      )}
+                    </div>
+                  ))}
               </div>
-              {allResponses[message.id] && Object.keys(allResponses[message.id]).length === 4 && (
+              {allResponses[message.id] && 
+               Object.keys(allResponses[message.id].responses).length === llmStatus.filter(llm => llm.enabled).length && (
                 <div className="analysis-section">
                   <button 
-                    onClick={() => handleAnalysis(message.id, allResponses[message.id])}
+                    onClick={() => handleAnalysis(message.id)}
                     className="analyze-button"
                     disabled={analyzing[message.id]}
                   >

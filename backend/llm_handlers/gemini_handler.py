@@ -5,6 +5,9 @@ import logging
 import asyncio
 from tenacity import retry, stop_after_attempt, wait_exponential
 
+# Configure logger
+logger = logging.getLogger(__name__)
+
 class GeminiHandler(BaseLLMHandler):
     def __init__(self, api_key: str):
         super().__init__(api_key)
@@ -76,11 +79,21 @@ class GeminiHandler(BaseLLMHandler):
             self.logger.error(f"Gemini API validation error: {str(e)}")
             return False
 
-    async def get_response(self, content: str) -> str:
+    async def get_response(self, user_input: str) -> str:
+        """Get response from Gemini API"""
         try:
-            response = await self.model.generate_content_async(content)
+            prompt = f"""Before answering this question: "{user_input}", think about the three most important questions that you need to understand to understand the deepness of the initial question.
+
+Then, provide a 300-word answer in the most concise way.
+
+Your response should be structured as follows:
+1. First, list the three key questions you identified
+2. Then, provide your concise 300-word answer
+
+Remember to be precise and focused in your response."""
+
+            response = await self.model.generate_content_async(prompt)
             return response.text
         except Exception as e:
-            error_message = str(e)
-            self.logger.error(f"Error in {self.__class__.__name__}: {error_message}")
-            return f"Error: {error_message}" 
+            logger.error(f"Error in GeminiHandler: {str(e)}")
+            raise 
